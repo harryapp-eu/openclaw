@@ -199,6 +199,41 @@ describe("loadPluginManifestRegistry", () => {
     ).toBe(true);
   });
 
+  it("suppresses duplicate warnings for explicit config overrides of bundled plugins", () => {
+    const bundledDir = makeTempDir();
+    const configDir = makeTempDir();
+    const manifest = { id: "googlechat", configSchema: { type: "object" } };
+    writeManifest(bundledDir, manifest);
+    writeManifest(configDir, manifest);
+
+    const registry = loadPluginManifestRegistry({
+      cache: false,
+      config: {
+        plugins: {
+          entries: {
+            googlechat: {
+              enabled: true,
+            },
+          },
+        },
+      },
+      candidates: [
+        createPluginCandidate({
+          idHint: "googlechat",
+          rootDir: bundledDir,
+          origin: "bundled",
+        }),
+        createPluginCandidate({
+          idHint: "googlechat",
+          rootDir: configDir,
+          origin: "config",
+        }),
+      ],
+    });
+
+    expect(countDuplicateWarnings(registry)).toBe(0);
+  });
+
   it("preserves provider auth env metadata from plugin manifests", () => {
     const dir = makeTempDir();
     writeManifest(dir, {
