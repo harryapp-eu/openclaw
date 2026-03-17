@@ -168,9 +168,14 @@ export async function startGatewaySidecars(params: {
         if (result.checked === 0) {
           return;
         }
-        params.log.warn(
-          `acp startup identity reconcile (renderer=${ACP_SESSION_IDENTITY_RENDERER_VERSION}): checked=${result.checked} resolved=${result.resolved} failed=${result.failed}`,
-        );
+        const message =
+          `acp startup identity reconcile (renderer=${ACP_SESSION_IDENTITY_RENDERER_VERSION}): ` +
+          `checked=${result.checked} resolved=${result.resolved} failed=${result.failed}`;
+        if (result.failed > 0) {
+          params.log.warn(message);
+        } else {
+          params.log.info(message);
+        }
       })
       .catch((err) => {
         params.log.warn(`acp startup identity reconcile failed: ${String(err)}`);

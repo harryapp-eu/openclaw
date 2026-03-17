@@ -10,6 +10,7 @@ import {
 import {
   createIdentityFromEnsure,
   identityEquals,
+  identityHasStableSessionId,
   isSessionIdentityPending,
   mergeSessionIdentity,
   resolveRuntimeHandleIdentifiersFromIdentity,
@@ -166,6 +167,40 @@ export class AcpSessionManager {
       }
       const currentIdentity = resolveSessionIdentityFromMeta(session.acp);
       if (!isSessionIdentityPending(currentIdentity)) {
+        continue;
+      }
+
+      const canResolvePendingIdentityWithoutRuntime =
+        currentIdentity?.source === "ensure" &&
+        Boolean(currentIdentity.acpxRecordId) &&
+        Boolean(currentIdentity.acpxSessionId) &&
+        currentIdentity.acpxRecordId === currentIdentity.acpxSessionId &&
+        !currentIdentity.agentSessionId &&
+        identityHasStableSessionId(currentIdentity);
+      if (canResolvePendingIdentityWithoutRuntime) {
+        checked += 1;
+        await this.deps.upsertSessionMeta({
+          cfg: params.cfg,
+          sessionKey: session.sessionKey,
+          mutate: (current, entry) => {
+            if (!entry) {
+              return null;
+            }
+            const base = current ?? entry.acp;
+            if (!base) {
+              return null;
+            }
+            return {
+              ...base,
+              identity: {
+                ...currentIdentity,
+                state: "resolved",
+                lastUpdatedAt: Date.now(),
+              },
+            };
+          },
+        });
+        resolved += 1;
         continue;
       }
 

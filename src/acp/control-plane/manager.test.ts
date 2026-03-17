@@ -1086,6 +1086,104 @@ describe("AcpSessionManager", () => {
     expect(runtimeState.ensureSession).not.toHaveBeenCalled();
   });
 
+  it("treats ensure-provided stable ids as already resolved for startup reconciliation", async () => {
+    const runtimeState = createRuntime();
+    hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
+      id: "acpx",
+      runtime: runtimeState.runtime,
+    });
+    const sessionKey = "agent:codex:acp:session-ensure-stable";
+    const ensureResolvedMeta: SessionAcpMeta = {
+      ...readySessionMeta(),
+      identity: {
+        state: "resolved",
+        source: "ensure",
+        acpxRecordId: "acpx-record-1",
+        acpxSessionId: "acpx-sid-1",
+        lastUpdatedAt: Date.now(),
+      },
+    };
+    hoisted.listAcpSessionEntriesMock.mockResolvedValue([
+      {
+        cfg: baseCfg,
+        storePath: "/tmp/sessions-acp.json",
+        sessionKey,
+        storeSessionKey: sessionKey,
+        entry: {
+          sessionId: "session-ensure-stable",
+          updatedAt: Date.now(),
+          acp: ensureResolvedMeta,
+        },
+        acp: ensureResolvedMeta,
+      },
+    ]);
+
+    const manager = new AcpSessionManager();
+    const result = await manager.reconcilePendingSessionIdentities({ cfg: baseCfg });
+
+    expect(result).toEqual({ checked: 0, resolved: 0, failed: 0 });
+    expect(runtimeState.getStatus).not.toHaveBeenCalled();
+    expect(runtimeState.ensureSession).not.toHaveBeenCalled();
+  });
+
+  it("upgrades pending identities with stable session ids without runtime reconciliation", async () => {
+    const runtimeState = createRuntime();
+    hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
+      id: "acpx",
+      runtime: runtimeState.runtime,
+    });
+    const sessionKey = "agent:codex:acp:session-pending-stable";
+    let currentMeta: SessionAcpMeta = {
+      ...readySessionMeta(),
+      identity: {
+        state: "pending",
+        source: "ensure",
+        acpxRecordId: "acpx-sid-1",
+        acpxSessionId: "acpx-sid-1",
+        lastUpdatedAt: Date.now(),
+      },
+    };
+    hoisted.listAcpSessionEntriesMock.mockResolvedValue([
+      {
+        cfg: baseCfg,
+        storePath: "/tmp/sessions-acp.json",
+        sessionKey,
+        storeSessionKey: sessionKey,
+        entry: {
+          sessionId: "session-pending-stable",
+          updatedAt: Date.now(),
+          acp: currentMeta,
+        },
+        acp: currentMeta,
+      },
+    ]);
+    hoisted.upsertAcpSessionMetaMock.mockImplementation(async (paramsUnknown: unknown) => {
+      const params = paramsUnknown as {
+        mutate: (
+          current: SessionAcpMeta | undefined,
+          entry: { acp?: SessionAcpMeta },
+        ) => SessionAcpMeta | null | undefined;
+      };
+      const next = params.mutate(currentMeta, { acp: currentMeta });
+      if (next) {
+        currentMeta = next;
+      }
+      return {
+        sessionId: "session-pending-stable",
+        updatedAt: Date.now(),
+        acp: currentMeta,
+      };
+    });
+
+    const manager = new AcpSessionManager();
+    const result = await manager.reconcilePendingSessionIdentities({ cfg: baseCfg });
+
+    expect(result).toEqual({ checked: 1, resolved: 1, failed: 0 });
+    expect(currentMeta.identity?.state).toBe("resolved");
+    expect(runtimeState.getStatus).not.toHaveBeenCalled();
+    expect(runtimeState.ensureSession).not.toHaveBeenCalled();
+  });
+
   it("preserves existing ACP session identifiers when ensure returns none", async () => {
     const runtimeState = createRuntime();
     runtimeState.ensureSession.mockResolvedValue({
