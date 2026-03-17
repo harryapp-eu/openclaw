@@ -34,6 +34,33 @@ export function resolveAcpxPluginRoot(moduleUrl: string = import.meta.url): stri
 
 export const ACPX_PLUGIN_ROOT = resolveAcpxPluginRoot();
 export const ACPX_BUNDLED_BIN = path.join(ACPX_PLUGIN_ROOT, "node_modules", ".bin", ACPX_BIN_NAME);
+
+function resolveAcpxDevSourcePluginRoot(pluginRoot: string): string | null {
+  const normalized = path.normalize(pluginRoot);
+  const marker = `${path.sep}dist${path.sep}extensions${path.sep}acpx`;
+  const markerIndex = normalized.lastIndexOf(marker);
+  if (markerIndex < 0) {
+    return null;
+  }
+  const repoRoot = normalized.slice(0, markerIndex);
+  const sourceRoot = path.join(repoRoot, "extensions", "acpx");
+  if (
+    fs.existsSync(path.join(sourceRoot, "openclaw.plugin.json")) &&
+    fs.existsSync(path.join(sourceRoot, "package.json"))
+  ) {
+    return sourceRoot;
+  }
+  return null;
+}
+
+function resolveDefaultAcpxCommand(pluginRoot: string): string {
+  const devSourceRoot = resolveAcpxDevSourcePluginRoot(pluginRoot);
+  if (devSourceRoot) {
+    return path.join(devSourceRoot, "node_modules", ".bin", ACPX_BIN_NAME);
+  }
+  return path.join(pluginRoot, "node_modules", ".bin", ACPX_BIN_NAME);
+}
+
 export function buildAcpxLocalInstallCommand(version: string = ACPX_PINNED_VERSION): string {
   return `npm install --omit=dev --no-save acpx@${version}`;
 }
@@ -254,10 +281,14 @@ function parseAcpxPluginConfig(value: unknown): ParseResult {
   };
 }
 
-function resolveConfiguredCommand(params: { configured?: string; workspaceDir?: string }): string {
+function resolveConfiguredCommand(params: {
+  configured?: string;
+  workspaceDir?: string;
+  pluginRoot?: string;
+}): string {
   const configured = params.configured?.trim();
   if (!configured) {
-    return ACPX_BUNDLED_BIN;
+    return resolveDefaultAcpxCommand(params.pluginRoot ?? ACPX_PLUGIN_ROOT);
   }
   if (path.isAbsolute(configured) || configured.includes(path.sep) || configured.includes("/")) {
     const baseDir = params.workspaceDir?.trim() || process.cwd();
@@ -352,9 +383,10 @@ export function resolveAcpxPluginConfig(params: {
   const command = resolveConfiguredCommand({
     configured: normalized.command,
     workspaceDir: params.workspaceDir,
+    pluginRoot: ACPX_PLUGIN_ROOT,
   });
-  const allowPluginLocalInstall = command === ACPX_BUNDLED_BIN;
-  const stripProviderAuthEnvVars = command === ACPX_BUNDLED_BIN;
+  const allowPluginLocalInstall = !normalized.command;
+  const stripProviderAuthEnvVars = !normalized.command;
   const configuredExpectedVersion = normalized.expectedVersion;
   const expectedVersion =
     configuredExpectedVersion === ACPX_VERSION_ANY

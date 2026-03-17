@@ -11,6 +11,14 @@ import {
   resolveAcpxPluginConfig,
 } from "./config.js";
 
+const DEV_SOURCE_ACPX_BIN = path.resolve(
+  "extensions",
+  "acpx",
+  "node_modules",
+  ".bin",
+  process.platform === "win32" ? "acpx.cmd" : "acpx",
+);
+
 describe("acpx plugin config parsing", () => {
   it("resolves source-layout plugin root from a file under src", () => {
     const pluginRoot = fs.mkdtempSync(path.join(os.tmpdir(), "acpx-root-source-"));
@@ -47,12 +55,16 @@ describe("acpx plugin config parsing", () => {
       workspaceDir: "/tmp/workspace",
     });
 
-    expect(resolved.command).toBe(ACPX_BUNDLED_BIN);
+    expect(resolved.command).toBe(DEV_SOURCE_ACPX_BIN);
     expect(resolved.expectedVersion).toBe(ACPX_PINNED_VERSION);
     expect(resolved.allowPluginLocalInstall).toBe(true);
     expect(resolved.stripProviderAuthEnvVars).toBe(true);
     expect(resolved.cwd).toBe(path.resolve("/tmp/workspace"));
     expect(resolved.strictWindowsCmdWrapper).toBe(true);
+  });
+
+  it("still exports bundled bin path constant", () => {
+    expect(ACPX_BUNDLED_BIN).toContain(path.join("node_modules", ".bin"));
   });
 
   it("accepts command override and disables plugin-local auto-install", () => {
