@@ -259,12 +259,13 @@ async function processMessageWithPipeline(params: {
     ? space.displayName || `space:${spaceId}`
     : senderName || `user:${senderId}`;
   const threadContext = resolveGoogleChatThreadContext(message);
-  const sessionKey = resolveThreadSessionKeys({
+  const threadKeys = resolveThreadSessionKeys({
     baseSessionKey: route.sessionKey,
     threadId: threadContext.sessionThreadId,
     parentSessionKey: threadContext.sessionThreadId ? route.sessionKey : undefined,
     normalizeThreadId: (value) => value,
-  }).sessionKey;
+  });
+  const { sessionKey, parentSessionKey } = threadKeys;
   const { storePath, body } = buildEnvelope({
     channel: "Google Chat",
     from: fromLabel,
@@ -293,6 +294,7 @@ async function processMessageWithPipeline(params: {
     Surface: "googlechat",
     MessageSid: message.name,
     MessageSidFull: message.name,
+    ParentSessionKey: parentSessionKey,
     ReplyToId: threadContext.sessionThreadId,
     ReplyToIdFull: threadContext.sessionThreadId,
     MessageThreadId: threadContext.sessionThreadId,
