@@ -4,13 +4,16 @@ import {
   hasResolvedCredentialValue,
 } from "../../channels/account-snapshot-fields.js";
 import {
-  buildChannelAccountSnapshot,
   formatChannelAllowFrom,
   resolveChannelAccountConfigured,
   resolveChannelAccountEnabled,
 } from "../../channels/account-summary.js";
 import { resolveChannelDefaultAccountId } from "../../channels/plugins/helpers.js";
 import { listChannelPlugins } from "../../channels/plugins/index.js";
+import {
+  buildChannelAccountSnapshot,
+  buildReadOnlySourceChannelAccountSnapshot,
+} from "../../channels/plugins/status.js";
 import type {
   ChannelAccountSnapshot,
   ChannelId,
@@ -139,14 +142,22 @@ async function resolveChannelAccountRow(
       cfg,
       readAccountConfiguredField: true,
     }));
-  const snapshot = buildChannelAccountSnapshot({
-    plugin,
-    cfg,
-    accountId,
-    account,
-    enabled,
-    configured,
-  });
+  const snapshot = useSourceUnavailableAccount
+    ? ((await buildReadOnlySourceChannelAccountSnapshot({
+        plugin,
+        cfg: sourceConfig,
+        accountId,
+      })) ??
+      (await buildChannelAccountSnapshot({
+        plugin,
+        cfg,
+        accountId,
+      })))
+    : await buildChannelAccountSnapshot({
+        plugin,
+        cfg,
+        accountId,
+      });
   return { accountId, account, enabled, configured, snapshot };
 }
 

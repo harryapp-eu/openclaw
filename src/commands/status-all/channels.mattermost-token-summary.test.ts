@@ -215,6 +215,67 @@ function makeTokenPlugin(): ChannelPlugin {
   });
 }
 
+function makeNestedConfigStatusPlugin(): ChannelPlugin {
+  return makeDirectPlugin({
+    id: "googlechat",
+    label: "Google Chat",
+    docsPath: "/channels/googlechat",
+    config: {
+      listAccountIds: () => ["default"],
+      defaultAccountId: () => "default",
+      inspectAccount: () => ({
+        name: "Patch Bot",
+        enabled: true,
+        configured: true,
+        config: {
+          audienceType: "app-url",
+          audience: "https://dev1.harryapp.ai/googlechat",
+        },
+      }),
+      resolveAccount: () => ({
+        name: "Patch Bot",
+        enabled: true,
+        configured: true,
+        config: {
+          audienceType: "app-url",
+          audience: "https://dev1.harryapp.ai/googlechat",
+        },
+      }),
+      isConfigured: () => true,
+      isEnabled: () => true,
+    },
+    status: {
+      buildAccountSnapshot: ({ account }) => ({
+        accountId: "default",
+        name: (account as { name?: string }).name,
+        enabled: true,
+        configured: true,
+        audienceType:
+          (account as { config?: { audienceType?: string } }).config?.audienceType ?? null,
+        audience: (account as { config?: { audience?: string } }).config?.audience ?? null,
+      }),
+      collectStatusIssues: (accounts) =>
+        accounts.flatMap((entry) => {
+          const issues: Array<{
+            channel: string;
+            accountId: string;
+            kind: "config";
+            message: string;
+          }> = [];
+          if (!entry.audience) {
+            issues.push({
+              channel: "googlechat",
+              accountId: String(entry.accountId ?? "default"),
+              kind: "config",
+              message: "Google Chat audience is missing (set channels.googlechat.audience).",
+            });
+          }
+          return issues;
+        }),
+    },
+  });
+}
+
 async function buildTestTable(
   plugins: ChannelPlugin[],
   params?: { cfg?: Record<string, unknown>; sourceConfig?: Record<string, unknown> },
@@ -328,5 +389,17 @@ describe("buildChannelsTable - mattermost token summary", () => {
   it("still reports single-token channels as ok", async () => {
     const table = await buildTestTable([makeTokenPlugin()]);
     expectTableRow(table, { id: "token-only", state: "ok", detailContains: "token" });
+  });
+
+  it("uses plugin-built snapshots for nested status fields in status --all", async () => {
+    const table = await buildTestTable([makeNestedConfigStatusPlugin()]);
+    expectTableRow(table, { id: "googlechat", state: "ok", detailEquals: "configured" });
+    expectTableDetailRows(table, "Google Chat accounts", [
+      {
+        Account: "default (Patch Bot)",
+        Notes: "",
+        Status: "OK",
+      },
+    ]);
   });
 });
