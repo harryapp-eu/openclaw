@@ -5,6 +5,7 @@ import {
   createReplyPrefixOptions,
   registerWebhookTargetWithPluginRoute,
   resolveInboundRouteEnvelopeBuilderWithRuntime,
+  resolveThreadSessionKeys,
   resolveWebhookPath,
 } from "openclaw/plugin-sdk/googlechat";
 import { type ResolvedGoogleChatAccount } from "./accounts.js";
@@ -27,6 +28,40 @@ import { getGoogleChatRuntime } from "./runtime.js";
 import type { GoogleChatAttachment, GoogleChatEvent } from "./types.js";
 export type { GoogleChatMonitorOptions, GoogleChatRuntimeEnv } from "./monitor-types.js";
 export { isSenderAllowed };
+
+const GOOGLE_CHAT_SYNTHETIC_THREAD_PREFIX = "googlechat-thread-key:";
+
+function buildSyntheticThreadKey(messageName: string): string {
+  return `${GOOGLE_CHAT_SYNTHETIC_THREAD_PREFIX}${messageName}`;
+}
+
+function resolveGoogleChatThreadContext(message: GoogleChatEvent["message"]): {
+  sessionThreadId?: string;
+  outboundThread?: string;
+  outboundThreadKey?: string;
+} {
+  const threadName = message?.thread?.name?.trim() || undefined;
+  const threadKey = message?.thread?.threadKey?.trim() || undefined;
+  if (threadKey) {
+    return {
+      sessionThreadId: buildSyntheticThreadKey(threadKey),
+      outboundThreadKey: threadKey,
+    };
+  }
+  if (threadName) {
+    return {
+      sessionThreadId: threadName,
+      outboundThread: threadName,
+    };
+  }
+  const messageName = message?.name?.trim() || undefined;
+  if (!messageName) {
+    return {};
+  }
+  return {
+    sessionThreadId: buildSyntheticThreadKey(messageName),
+  };
+}
 
 const webhookTargets = new Map<string, WebhookTarget[]>();
 const webhookInFlightLimiter = createWebhookInFlightLimiter();
@@ -223,11 +258,19 @@ async function processMessageWithPipeline(params: {
   const fromLabel = isGroup
     ? space.displayName || `space:${spaceId}`
     : senderName || `user:${senderId}`;
+  const threadContext = resolveGoogleChatThreadContext(message);
+  const sessionKey = resolveThreadSessionKeys({
+    baseSessionKey: route.sessionKey,
+    threadId: threadContext.sessionThreadId,
+    parentSessionKey: threadContext.sessionThreadId ? route.sessionKey : undefined,
+    normalizeThreadId: (value) => value,
+  }).sessionKey;
   const { storePath, body } = buildEnvelope({
     channel: "Google Chat",
     from: fromLabel,
     timestamp: event.eventTime ? Date.parse(event.eventTime) : undefined,
     body: rawBody,
+    sessionKey,
   });
 
   const ctxPayload = core.channel.reply.finalizeInboundContext({
@@ -237,7 +280,7 @@ async function processMessageWithPipeline(params: {
     CommandBody: rawBody,
     From: `googlechat:${senderId}`,
     To: `googlechat:${spaceId}`,
-    SessionKey: route.sessionKey,
+    SessionKey: sessionKey,
     AccountId: route.accountId,
     ChatType: isGroup ? "channel" : "direct",
     ConversationLabel: fromLabel,
@@ -250,8 +293,9 @@ async function processMessageWithPipeline(params: {
     Surface: "googlechat",
     MessageSid: message.name,
     MessageSidFull: message.name,
-    ReplyToId: message.thread?.name,
-    ReplyToIdFull: message.thread?.name,
+    ReplyToId: threadContext.sessionThreadId,
+    ReplyToIdFull: threadContext.sessionThreadId,
+    MessageThreadId: threadContext.sessionThreadId,
     MediaPath: mediaPath,
     MediaType: mediaType,
     MediaUrl: mediaPath,
@@ -295,7 +339,8 @@ async function processMessageWithPipeline(params: {
         account,
         space: spaceId,
         text: `_${botName} is typing..._`,
-        thread: message.thread?.name,
+        thread: threadContext.outboundThread,
+        threadKey: threadContext.outboundThreadKey,
       });
       typingMessageName = result?.messageName;
     } catch (err) {
@@ -320,6 +365,8 @@ async function processMessageWithPipeline(params: {
           payload,
           account,
           spaceId,
+          defaultThread: threadContext.outboundThread,
+          defaultThreadKey: threadContext.outboundThreadKey,
           runtime,
           core,
           config,
@@ -367,6 +414,8 @@ async function deliverGoogleChatReply(params: {
   payload: { text?: string; mediaUrls?: string[]; mediaUrl?: string; replyToId?: string };
   account: ResolvedGoogleChatAccount;
   spaceId: string;
+  defaultThread?: string;
+  defaultThreadKey?: string;
   runtime: GoogleChatRuntimeEnv;
   core: GoogleChatCoreRuntime;
   config: OpenClawConfig;
@@ -375,6 +424,14 @@ async function deliverGoogleChatReply(params: {
 }): Promise<void> {
   const { payload, account, spaceId, runtime, core, config, statusSink, typingMessageName } =
     params;
+  const replyThread = payload.replyToId?.startsWith(GOOGLE_CHAT_SYNTHETIC_THREAD_PREFIX)
+    ? undefined
+    : payload.replyToId;
+  const replyThreadKey = payload.replyToId?.startsWith(GOOGLE_CHAT_SYNTHETIC_THREAD_PREFIX)
+    ? payload.replyToId.slice(GOOGLE_CHAT_SYNTHETIC_THREAD_PREFIX.length) || undefined
+    : undefined;
+  const thread = replyThread ?? params.defaultThread;
+  const threadKey = replyThreadKey ?? params.defaultThreadKey;
   const mediaList = payload.mediaUrls?.length
     ? payload.mediaUrls
     : payload.mediaUrl
@@ -431,7 +488,8 @@ async function deliverGoogleChatReply(params: {
           account,
           space: spaceId,
           text: caption,
-          thread: payload.replyToId,
+          thread,
+          threadKey,
           attachments: [
             { attachmentUploadToken: upload.attachmentUploadToken, contentName: loaded.fileName },
           ],
@@ -463,7 +521,8 @@ async function deliverGoogleChatReply(params: {
             account,
             space: spaceId,
             text: chunk,
-            thread: payload.replyToId,
+            thread,
+            threadKey,
           });
         }
         statusSink?.({ lastOutboundAt: Date.now() });

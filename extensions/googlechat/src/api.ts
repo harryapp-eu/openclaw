@@ -142,15 +142,19 @@ export async function sendGoogleChatMessage(params: {
   space: string;
   text?: string;
   thread?: string;
+  threadKey?: string;
   attachments?: Array<{ attachmentUploadToken: string; contentName?: string }>;
-}): Promise<{ messageName?: string } | null> {
-  const { account, space, text, thread, attachments } = params;
+}): Promise<{ messageName?: string; threadName?: string; threadKey?: string } | null> {
+  const { account, space, text, thread, threadKey, attachments } = params;
   const body: Record<string, unknown> = {};
   if (text) {
     body.text = text;
   }
-  if (thread) {
-    body.thread = { name: thread };
+  if (thread || threadKey) {
+    body.thread = {
+      ...(thread ? { name: thread } : {}),
+      ...(threadKey ? { threadKey } : {}),
+    };
   }
   if (attachments && attachments.length > 0) {
     body.attachment = attachments.map((item) => ({
@@ -159,15 +163,25 @@ export async function sendGoogleChatMessage(params: {
     }));
   }
   const urlObj = new URL(`${CHAT_API_BASE}/${space}/messages`);
-  if (thread) {
+  if (thread || threadKey) {
     urlObj.searchParams.set("messageReplyOption", "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD");
   }
   const url = urlObj.toString();
-  const result = await fetchJson<{ name?: string }>(account, url, {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-  return result ? { messageName: result.name } : null;
+  const result = await fetchJson<{ name?: string; thread?: { name?: string; threadKey?: string } }>(
+    account,
+    url,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+  return result
+    ? {
+        messageName: result.name,
+        threadName: result.thread?.name,
+        threadKey: result.thread?.threadKey,
+      }
+    : null;
 }
 
 export async function updateGoogleChatMessage(params: {

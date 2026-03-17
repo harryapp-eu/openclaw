@@ -2,8 +2,25 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedGoogleChatAccount } from "./accounts.js";
 import { downloadGoogleChatMedia, sendGoogleChatMessage } from "./api.js";
 
+const { fetchWithSsrFGuardMock } = vi.hoisted(() => ({
+  fetchWithSsrFGuardMock: vi.fn(),
+}));
+
 vi.mock("./auth.js", () => ({
   getGoogleChatAccessToken: vi.fn().mockResolvedValue("token"),
+}));
+
+vi.mock("openclaw/plugin-sdk/googlechat", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/googlechat")>()),
+  fetchWithSsrFGuard: (...args: unknown[]) =>
+    fetchWithSsrFGuardMock(
+      ...(args as [
+        params: {
+          url: string;
+          init?: RequestInit;
+        },
+      ]),
+    ),
 }));
 
 const account = {
@@ -14,15 +31,18 @@ const account = {
 } as ResolvedGoogleChatAccount;
 
 function stubSuccessfulSend(name: string) {
-  const fetchMock = vi
-    .fn()
-    .mockResolvedValue(new Response(JSON.stringify({ name }), { status: 200 }));
-  vi.stubGlobal("fetch", fetchMock);
-  return fetchMock;
+  fetchWithSsrFGuardMock.mockResolvedValue({
+    response: new Response(JSON.stringify({ name }), { status: 200 }),
+    release: vi.fn(async () => undefined),
+  });
+  return fetchWithSsrFGuardMock;
 }
 
 async function expectDownloadToRejectForResponse(response: Response) {
-  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+  fetchWithSsrFGuardMock.mockResolvedValue({
+    response,
+    release: vi.fn(async () => undefined),
+  });
   await expect(
     downloadGoogleChatMedia({ account, resourceName: "media/123", maxBytes: 10 }),
   ).rejects.toThrow(/max bytes/i);
@@ -30,7 +50,7 @@ async function expectDownloadToRejectForResponse(response: Response) {
 
 describe("downloadGoogleChatMedia", () => {
   afterEach(() => {
-    vi.unstubAllGlobals();
+    fetchWithSsrFGuardMock.mockReset();
   });
 
   it("rejects when content-length exceeds max bytes", async () => {
@@ -69,7 +89,7 @@ describe("downloadGoogleChatMedia", () => {
 
 describe("sendGoogleChatMessage", () => {
   afterEach(() => {
-    vi.unstubAllGlobals();
+    fetchWithSsrFGuardMock.mockReset();
   });
 
   it("adds messageReplyOption when sending to an existing thread", async () => {
@@ -82,11 +102,50 @@ describe("sendGoogleChatMessage", () => {
       thread: "spaces/AAA/threads/xyz",
     });
 
-    const [url, init] = fetchMock.mock.calls[0] ?? [];
-    expect(String(url)).toContain("messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"); // pragma: allowlist secret
-    expect(JSON.parse(String(init?.body))).toMatchObject({
+    const [request] = fetchMock.mock.calls[0] ?? [];
+    expect(String(request?.url)).toContain(
+      "messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD",
+    ); // pragma: allowlist secret
+    expect(JSON.parse(String(request?.init?.body))).toMatchObject({
       text: "hello",
       thread: { name: "spaces/AAA/threads/xyz" },
+    });
+  });
+
+  it("supports synthetic thread keys for starting a new thread-backed session", async () => {
+    const fetchMock = fetchWithSsrFGuardMock.mockResolvedValue({
+      response: new Response(
+        JSON.stringify({
+          name: "spaces/AAA/messages/125",
+          thread: {
+            name: "spaces/AAA/threads/generated",
+            threadKey: "msg-1",
+          },
+        }),
+        { status: 200 },
+      ),
+      release: vi.fn(async () => undefined),
+    });
+
+    const result = await sendGoogleChatMessage({
+      account,
+      space: "spaces/AAA",
+      text: "hello",
+      threadKey: "msg-1",
+    });
+
+    const [request] = fetchMock.mock.calls[0] ?? [];
+    expect(String(request?.url)).toContain(
+      "messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD",
+    ); // pragma: allowlist secret
+    expect(JSON.parse(String(request?.init?.body))).toMatchObject({
+      text: "hello",
+      thread: { threadKey: "msg-1" },
+    });
+    expect(result).toEqual({
+      messageName: "spaces/AAA/messages/125",
+      threadName: "spaces/AAA/threads/generated",
+      threadKey: "msg-1",
     });
   });
 
@@ -99,7 +158,7 @@ describe("sendGoogleChatMessage", () => {
       text: "hello",
     });
 
-    const [url] = fetchMock.mock.calls[0] ?? [];
-    expect(String(url)).not.toContain("messageReplyOption=");
+    const [request] = fetchMock.mock.calls[0] ?? [];
+    expect(String(request?.url)).not.toContain("messageReplyOption=");
   });
 });
