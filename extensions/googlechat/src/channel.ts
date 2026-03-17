@@ -373,8 +373,24 @@ export const googlechatPlugin: ChannelPlugin<ResolvedGoogleChatAccount> = {
         if (!enabled || !configured) {
           return [];
         }
+        const config =
+          entry.config && typeof entry.config === "object"
+            ? (entry.config as { audience?: unknown; audienceType?: unknown })
+            : null;
+        const audience =
+          typeof entry.audience === "string" && entry.audience.trim().length > 0
+            ? entry.audience.trim()
+            : typeof config?.audience === "string" && config.audience.trim().length > 0
+              ? config.audience.trim()
+              : "";
+        const audienceType =
+          typeof entry.audienceType === "string" && entry.audienceType.trim().length > 0
+            ? entry.audienceType.trim()
+            : typeof config?.audienceType === "string" && config.audienceType.trim().length > 0
+              ? config.audienceType.trim()
+              : "";
         const issues: ChannelStatusIssue[] = [];
-        if (!entry.audience) {
+        if (!audience) {
           issues.push({
             channel: "googlechat",
             accountId,
@@ -383,7 +399,7 @@ export const googlechatPlugin: ChannelPlugin<ResolvedGoogleChatAccount> = {
             fix: "Set channels.googlechat.audienceType and channels.googlechat.audience.",
           });
         }
-        if (!entry.audienceType) {
+        if (!audienceType) {
           issues.push({
             channel: "googlechat",
             accountId,
