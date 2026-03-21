@@ -5,6 +5,7 @@ export function makeDirectPlugin(params: {
   label: string;
   docsPath: string;
   config: ChannelPlugin["config"];
+  status?: ChannelPlugin["status"];
 }): ChannelPlugin {
   return {
     id: params.id,
@@ -17,6 +18,7 @@ export function makeDirectPlugin(params: {
     },
     capabilities: { chatTypes: ["direct"] },
     config: params.config,
+    status: params.status,
     actions: {
       describeMessageTool: () => ({ actions: ["send"] }),
     },

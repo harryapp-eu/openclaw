@@ -35,6 +35,7 @@ describe("googlechatPlugin gateway.startAccount", () => {
       enabled: true,
       credentialSource: "inline",
       credentials: {},
+      userAuth: { source: "none" },
       config: {
         webhookPath: "/googlechat",
         webhookUrl: "https://example.com/googlechat",

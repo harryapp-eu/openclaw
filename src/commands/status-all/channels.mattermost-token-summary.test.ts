@@ -250,9 +250,8 @@ function makeNestedConfigStatusPlugin(): ChannelPlugin {
         name: (account as { name?: string }).name,
         enabled: true,
         configured: true,
-        audienceType:
-          (account as { config?: { audienceType?: string } }).config?.audienceType ?? null,
-        audience: (account as { config?: { audience?: string } }).config?.audience ?? null,
+        audienceType: (account as { config?: { audienceType?: string } }).config?.audienceType,
+        audience: (account as { config?: { audience?: string } }).config?.audience,
       }),
       collectStatusIssues: (accounts) =>
         accounts.flatMap((entry) => {

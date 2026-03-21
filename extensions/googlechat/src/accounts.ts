@@ -1,7 +1,7 @@
 import { createAccountListHelpers } from "openclaw/plugin-sdk/account-helpers";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/account-id";
-import { normalizeResolvedSecretInputString } from "openclaw/plugin-sdk/config-runtime";
 import { isSecretRef, type OpenClawConfig } from "openclaw/plugin-sdk/core";
+import { normalizeResolvedSecretInputString } from "openclaw/plugin-sdk/secret-input";
 import type { GoogleChatAccountConfig } from "./types.config.js";
 
 export type GoogleChatCredentialSource = "file" | "inline" | "env" | "none";

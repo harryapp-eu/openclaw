@@ -172,10 +172,12 @@ function createRoutingHarness() {
       routing: {
         resolveAgentRoute: vi.fn(() => ({
           agentId: "main",
+          channel: "googlechat",
           accountId: "default",
           sessionKey: "agent:main:googlechat:group:spaces/AAA",
           mainSessionKey: "agent:main:main",
-          matchedBy: "default",
+          lastRoutePolicy: "session" as const,
+          matchedBy: "default" as const,
         })),
       },
       reply: {
@@ -411,15 +413,10 @@ describe("Google Chat webhook routing", () => {
       await flushAsync();
 
       expect(harness.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(2);
-      const firstCtx = harness.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.ctx as {
-        SessionKey?: string;
-        ParentSessionKey?: string;
-      };
-      const secondCtx = harness.dispatchReplyWithBufferedBlockDispatcher.mock.calls[1]?.[0]
-        ?.ctx as {
-        SessionKey?: string;
-        ParentSessionKey?: string;
-      };
+      const replyCalls = harness.dispatchReplyWithBufferedBlockDispatcher.mock
+        .calls as unknown as Array<[{ ctx: { SessionKey?: string; ParentSessionKey?: string } }]>;
+      const firstCtx = replyCalls[0]![0].ctx;
+      const secondCtx = replyCalls[1]![0].ctx;
 
       expect(firstCtx.SessionKey).toBe(
         "agent:main:googlechat:group:spaces/AAA:thread:googlechat-thread-key:thread-alpha",
@@ -483,13 +480,10 @@ describe("Google Chat webhook routing", () => {
       await flushAsync();
 
       expect(harness.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(2);
-      const firstCtx = harness.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.ctx as {
-        SessionKey?: string;
-      };
-      const secondCtx = harness.dispatchReplyWithBufferedBlockDispatcher.mock.calls[1]?.[0]
-        ?.ctx as {
-        SessionKey?: string;
-      };
+      const replyCalls = harness.dispatchReplyWithBufferedBlockDispatcher.mock
+        .calls as unknown as Array<[{ ctx: { SessionKey?: string } }]>;
+      const firstCtx = replyCalls[0]![0].ctx;
+      const secondCtx = replyCalls[1]![0].ctx;
 
       expect(firstCtx.SessionKey).toBe(
         "agent:main:googlechat:group:spaces/AAA:thread:googlechat-thread-key:thread-alpha",

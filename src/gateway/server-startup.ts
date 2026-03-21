@@ -174,7 +174,7 @@ export async function startGatewaySidecars(params: {
         if (result.failed > 0) {
           params.log.warn(message);
         } else {
-          params.log.info(message);
+          params.log.warn(message);
         }
       })
       .catch((err) => {
