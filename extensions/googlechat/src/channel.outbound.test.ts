@@ -27,6 +27,11 @@ function createGoogleChatCfg(): OpenClawConfig {
           private_key: "test-key", // pragma: allowlist secret
           token_uri: "https://oauth2.googleapis.com/token",
         },
+        userAuth: {
+          refreshToken: "refresh-token",
+          clientId: "client-id",
+          clientSecret: "client-secret",
+        },
       },
     },
   };

@@ -173,6 +173,22 @@ Use these identifiers for delivery and allowlists:
       audience: "https://gateway.example.com/googlechat",
       webhookPath: "/googlechat",
       botUser: "users/1234567890", // optional; helps mention detection
+      userAuth: {
+        // Needed for uploads/reactions and other user-auth-only Chat APIs.
+        accessTokenRef: { source: "env", provider: "default", id: "GOOGLE_CHAT_USER_ACCESS_TOKEN" },
+        refreshTokenRef: {
+          source: "env",
+          provider: "default",
+          id: "GOOGLE_CHAT_USER_REFRESH_TOKEN",
+        },
+        clientIdRef: { source: "env", provider: "default", id: "GOOGLE_CHAT_USER_CLIENT_ID" },
+        clientSecretRef: {
+          source: "env",
+          provider: "default",
+          id: "GOOGLE_CHAT_USER_CLIENT_SECRET",
+        },
+        // tokenUrl: "https://oauth2.googleapis.com/token",
+      },
       dm: {
         policy: "pairing",
         allowFrom: ["users/1234567890"],
@@ -198,11 +214,13 @@ Notes:
 
 - Service account credentials can also be passed inline with `serviceAccount` (JSON string).
 - `serviceAccountRef` is also supported (env/file SecretRef), including per-account refs under `channels.googlechat.accounts.<id>.serviceAccountRef`.
+- `userAuth` supports `accessToken`, `refreshToken`, `clientId`, `clientSecret`, and optional `tokenUrl`, each either inline or via sibling `...Ref` SecretRefs.
+- If `userAuth.refreshToken` + client credentials are present, OpenClaw refreshes user access tokens automatically in-memory before upload/reaction calls.
 - Default webhook path is `/googlechat` if `webhookPath` isn’t set.
 - `dangerouslyAllowNameMatching` re-enables mutable email principal matching for allowlists (break-glass compatibility mode).
-- Reactions are available via the `reactions` tool and `channels action` when `actions.reactions` is enabled.
-- `typingIndicator` supports `none`, `message` (default), and `reaction` (reaction requires user OAuth).
-- Attachments are downloaded through the Chat API and stored in the media pipeline (size capped by `mediaMaxMb`).
+- Reactions are available via the `reactions` tool and `channels action` when `actions.reactions` is enabled, but they require `userAuth`.
+- `typingIndicator` supports `none`, `message` (default), and `reaction` (reaction requires user OAuth; message mode remains the safe default).
+- Attachments are downloaded through the Chat API and stored in the media pipeline (size capped by `mediaMaxMb`), and attachment upload requires `userAuth`.
 
 Secrets reference details: [Secrets Management](/gateway/secrets).
 

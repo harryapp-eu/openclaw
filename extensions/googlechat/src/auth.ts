@@ -1,16 +1,24 @@
 import { GoogleAuth, OAuth2Client } from "google-auth-library";
-import type { ResolvedGoogleChatAccount } from "./accounts.js";
+import type { ResolvedGoogleChatAccount, ResolvedGoogleChatUserAuth } from "./accounts.js";
 
-const CHAT_SCOPE = "https://www.googleapis.com/auth/chat.bot";
+const CHAT_SCOPES = [
+  "https://www.googleapis.com/auth/chat.bot",
+  "https://www.googleapis.com/auth/chat.messages.create",
+];
 const CHAT_ISSUER = "chat@system.gserviceaccount.com";
 // Google Workspace Add-ons use a different service account pattern
 const ADDON_ISSUER_PATTERN = /^service-\d+@gcp-sa-gsuiteaddons\.iam\.gserviceaccount\.com$/;
 const CHAT_CERTS_URL =
   "https://www.googleapis.com/service_accounts/v1/metadata/x509/chat@system.gserviceaccount.com";
+const DEFAULT_TOKEN_URL = "https://oauth2.googleapis.com/token";
 
 // Size-capped to prevent unbounded growth in long-running deployments (#4948)
 const MAX_AUTH_CACHE_SIZE = 32;
 const authCache = new Map<string, { key: string; auth: GoogleAuth }>();
+const userAuthCache = new Map<
+  string,
+  { key: string; credentials: ResolvedGoogleChatUserAuth; token?: string; expiresAt?: number }
+>();
 const verifyClient = new OAuth2Client();
 
 let cachedCerts: { fetchedAt: number; certs: Record<string, string> } | null = null;
@@ -23,6 +31,16 @@ function buildAuthKey(account: ResolvedGoogleChatAccount): string {
     return `inline:${JSON.stringify(account.credentials)}`;
   }
   return "none";
+}
+
+function buildUserAuthKey(account: ResolvedGoogleChatAccount): string {
+  return JSON.stringify({
+    accessToken: account.userAuth.accessToken ?? null,
+    refreshToken: account.userAuth.refreshToken ?? null,
+    clientId: account.userAuth.clientId ?? null,
+    clientSecret: account.userAuth.clientSecret ?? null,
+    tokenUrl: account.userAuth.tokenUrl ?? null,
+  });
 }
 
 function getAuthInstance(account: ResolvedGoogleChatAccount): GoogleAuth {
@@ -42,28 +60,125 @@ function getAuthInstance(account: ResolvedGoogleChatAccount): GoogleAuth {
   };
 
   if (account.credentialsFile) {
-    const auth = new GoogleAuth({ keyFile: account.credentialsFile, scopes: [CHAT_SCOPE] });
+    const auth = new GoogleAuth({ keyFile: account.credentialsFile, scopes: CHAT_SCOPES });
     authCache.set(account.accountId, { key, auth });
     evictOldest();
     return auth;
   }
 
   if (account.credentials) {
-    const auth = new GoogleAuth({ credentials: account.credentials, scopes: [CHAT_SCOPE] });
+    const auth = new GoogleAuth({ credentials: account.credentials, scopes: CHAT_SCOPES });
     authCache.set(account.accountId, { key, auth });
     evictOldest();
     return auth;
   }
 
-  const auth = new GoogleAuth({ scopes: [CHAT_SCOPE] });
+  const auth = new GoogleAuth({ scopes: CHAT_SCOPES });
   authCache.set(account.accountId, { key, auth });
   evictOldest();
   return auth;
 }
 
-export async function getGoogleChatAccessToken(
+type GoogleChatAuthMode = "app" | "user";
+
+function getCachedUserToken(account: ResolvedGoogleChatAccount): string | undefined {
+  const key = buildUserAuthKey(account);
+  const cached = userAuthCache.get(account.accountId);
+  if (!cached || cached.key !== key) {
+    if (cached) {
+      userAuthCache.delete(account.accountId);
+    }
+    return undefined;
+  }
+  if (cached.token && cached.expiresAt && cached.expiresAt > Date.now() + 30_000) {
+    return cached.token;
+  }
+  return undefined;
+}
+
+function setCachedUserToken(
+  account: ResolvedGoogleChatAccount,
+  params: { token: string; expiresIn?: number },
+) {
+  const expiresAt = params.expiresIn
+    ? Date.now() + Math.max(0, params.expiresIn - 30) * 1000
+    : undefined;
+  userAuthCache.set(account.accountId, {
+    key: buildUserAuthKey(account),
+    credentials: account.userAuth,
+    token: params.token,
+    expiresAt,
+  });
+  if (userAuthCache.size > MAX_AUTH_CACHE_SIZE) {
+    const oldest = userAuthCache.keys().next().value;
+    if (oldest !== undefined) {
+      userAuthCache.delete(oldest);
+    }
+  }
+}
+
+async function refreshGoogleChatUserAccessToken(
   account: ResolvedGoogleChatAccount,
 ): Promise<string> {
+  const cached = getCachedUserToken(account);
+  if (cached) {
+    return cached;
+  }
+
+  const accessToken = account.userAuth.accessToken?.trim();
+  const refreshToken = account.userAuth.refreshToken?.trim();
+  const clientId = account.userAuth.clientId?.trim();
+  const clientSecret = account.userAuth.clientSecret?.trim();
+  const tokenUrl = account.userAuth.tokenUrl?.trim() || DEFAULT_TOKEN_URL;
+
+  if (accessToken && !refreshToken) {
+    setCachedUserToken(account, { token: accessToken });
+    return accessToken;
+  }
+
+  if (!refreshToken || !clientId || !clientSecret) {
+    throw new Error(
+      "Google Chat user auth is missing refresh credentials. Set userAuth.refreshToken, userAuth.clientId, and userAuth.clientSecret.",
+    );
+  }
+
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+    client_id: clientId,
+    client_secret: clientSecret,
+  });
+  const response = await fetch(tokenUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(
+      `Google Chat user token refresh failed (${response.status}): ${text || response.statusText}`,
+    );
+  }
+  const payload = (await response.json()) as { access_token?: string; expires_in?: number };
+  const token = payload.access_token?.trim();
+  if (!token) {
+    throw new Error("Google Chat user token refresh returned no access_token");
+  }
+  setCachedUserToken(account, { token, expiresIn: payload.expires_in });
+  return token;
+}
+
+export async function getGoogleChatAccessToken(
+  account: ResolvedGoogleChatAccount,
+  options?: { authMode?: GoogleChatAuthMode },
+): Promise<string> {
+  const authMode = options?.authMode ?? "app";
+  if (authMode === "user") {
+    return await refreshGoogleChatUserAccessToken(account);
+  }
+
   const auth = getAuthInstance(account);
   const client = await auth.getClient();
   const access = await client.getAccessToken();
@@ -157,4 +272,4 @@ export async function verifyGoogleChatRequest(params: {
   return { ok: false, reason: "unsupported audience type" };
 }
 
-export const GOOGLE_CHAT_SCOPE = CHAT_SCOPE;
+export const GOOGLE_CHAT_SCOPE = CHAT_SCOPES[0];

@@ -39,10 +39,14 @@ function buildSyntheticThreadKey(messageName: string): string {
   return `${GOOGLE_CHAT_SYNTHETIC_THREAD_PREFIX}${messageName}`;
 }
 
-function resolveGoogleChatThreadContext(message: GoogleChatEvent["message"]): {
+export type GoogleChatThreadIdentitySource = "thread-key" | "thread-name" | "message-name" | "none";
+
+export function resolveGoogleChatThreadContext(message: GoogleChatEvent["message"]): {
   sessionThreadId?: string;
   outboundThread?: string;
   outboundThreadKey?: string;
+  identitySource: GoogleChatThreadIdentitySource;
+  identityValue?: string;
 } {
   const threadName = message?.thread?.name?.trim() || undefined;
   const threadKey = message?.thread?.threadKey?.trim() || undefined;
@@ -50,20 +54,26 @@ function resolveGoogleChatThreadContext(message: GoogleChatEvent["message"]): {
     return {
       sessionThreadId: buildSyntheticThreadKey(threadKey),
       outboundThreadKey: threadKey,
+      identitySource: "thread-key",
+      identityValue: threadKey,
     };
   }
   if (threadName) {
     return {
       sessionThreadId: threadName,
       outboundThread: threadName,
+      identitySource: "thread-name",
+      identityValue: threadName,
     };
   }
   const messageName = message?.name?.trim() || undefined;
   if (!messageName) {
-    return {};
+    return { identitySource: "none" };
   }
   return {
     sessionThreadId: buildSyntheticThreadKey(messageName),
+    identitySource: "message-name",
+    identityValue: messageName,
   };
 }
 
@@ -270,6 +280,11 @@ async function processMessageWithPipeline(params: {
     normalizeThreadId: (value) => value,
   });
   const { sessionKey, parentSessionKey } = threadKeys;
+  logVerbose(
+    core,
+    runtime,
+    `thread routing source=${threadContext.identitySource} identity=${threadContext.identityValue ?? "none"} baseSessionKey=${route.sessionKey} sessionKey=${sessionKey} parentSessionKey=${parentSessionKey ?? "none"}`,
+  );
   const { storePath, body } = buildEnvelope({
     channel: "Google Chat",
     from: fromLabel,

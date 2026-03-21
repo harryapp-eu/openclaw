@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import { fetchWithSsrFGuard } from "../runtime-api.js";
 import type { ResolvedGoogleChatAccount } from "./accounts.js";
 import { getGoogleChatAccessToken } from "./auth.js";
+
+export type GoogleChatAuthMode = "app" | "user";
 import type { GoogleChatReaction } from "./types.js";
 
 const CHAT_API_BASE = "https://chat.googleapis.com/v1";
@@ -20,6 +22,7 @@ async function withGoogleChatResponse<T>(params: {
   init?: RequestInit;
   auditContext: string;
   errorPrefix?: string;
+  authMode?: GoogleChatAuthMode;
   handleResponse: (response: Response) => Promise<T>;
 }): Promise<T> {
   const {
@@ -28,9 +31,10 @@ async function withGoogleChatResponse<T>(params: {
     init,
     auditContext,
     errorPrefix = "Google Chat API",
+    authMode = "app",
     handleResponse,
   } = params;
-  const token = await getGoogleChatAccessToken(account);
+  const token = await getGoogleChatAccessToken(account, { authMode });
   const { response, release } = await fetchWithSsrFGuard({
     url,
     init: {
@@ -242,6 +246,7 @@ export async function uploadGoogleChatAttachment(params: {
     },
     auditContext: "googlechat.upload",
     errorPrefix: "Google Chat upload",
+    authMode: "user",
     handleResponse: async (response) =>
       (await response.json()) as {
         attachmentDataRef?: { attachmentUploadToken?: string };
@@ -269,9 +274,19 @@ export async function createGoogleChatReaction(params: {
 }): Promise<GoogleChatReaction> {
   const { account, messageName, emoji } = params;
   const url = `${CHAT_API_BASE}/${messageName}/reactions`;
-  return await fetchJson<GoogleChatReaction>(account, url, {
-    method: "POST",
-    body: JSON.stringify({ emoji: { unicode: emoji } }),
+  return await withGoogleChatResponse<GoogleChatReaction>({
+    account,
+    url,
+    init: {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ emoji: { unicode: emoji } }),
+    },
+    auditContext: "googlechat.api.reaction.create",
+    authMode: "user",
+    handleResponse: async (response) => (await response.json()) as GoogleChatReaction,
   });
 }
 
@@ -285,8 +300,14 @@ export async function listGoogleChatReactions(params: {
   if (limit && limit > 0) {
     url.searchParams.set("pageSize", String(limit));
   }
-  const result = await fetchJson<{ reactions?: GoogleChatReaction[] }>(account, url.toString(), {
-    method: "GET",
+  const result = await withGoogleChatResponse<{ reactions?: GoogleChatReaction[] }>({
+    account,
+    url: url.toString(),
+    init: { method: "GET" },
+    auditContext: "googlechat.api.reaction.list",
+    authMode: "user",
+    handleResponse: async (response) =>
+      (await response.json()) as { reactions?: GoogleChatReaction[] },
   });
   return result.reactions ?? [];
 }
@@ -297,7 +318,14 @@ export async function deleteGoogleChatReaction(params: {
 }): Promise<void> {
   const { account, reactionName } = params;
   const url = `${CHAT_API_BASE}/${reactionName}`;
-  await fetchOk(account, url, { method: "DELETE" });
+  await withGoogleChatResponse({
+    account,
+    url,
+    init: { method: "DELETE" },
+    auditContext: "googlechat.api.reaction.delete",
+    authMode: "user",
+    handleResponse: async () => undefined,
+  });
 }
 
 export async function findGoogleChatDirectMessage(params: {
