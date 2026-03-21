@@ -773,6 +773,20 @@ export const GoogleChatAccountSchema = z
     webhookPath: z.string().optional(),
     webhookUrl: z.string().optional(),
     botUser: z.string().optional(),
+    userAuth: z
+      .object({
+        accessToken: SecretInputSchema.optional().register(sensitive),
+        accessTokenRef: SecretRefSchema.optional().register(sensitive),
+        refreshToken: SecretInputSchema.optional().register(sensitive),
+        refreshTokenRef: SecretRefSchema.optional().register(sensitive),
+        clientId: SecretInputSchema.optional().register(sensitive),
+        clientIdRef: SecretRefSchema.optional().register(sensitive),
+        clientSecret: SecretInputSchema.optional().register(sensitive),
+        clientSecretRef: SecretRefSchema.optional().register(sensitive),
+        tokenUrl: z.string().optional(),
+      })
+      .strict()
+      .optional(),
     historyLimit: z.number().int().min(0).optional(),
     dmHistoryLimit: z.number().int().min(0).optional(),
     dms: z.record(z.string(), DmConfigSchema.optional()).optional(),

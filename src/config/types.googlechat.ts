@@ -6,7 +6,7 @@ import type {
 } from "./types.base.js";
 import type { ChannelHealthMonitorConfig } from "./types.channels.js";
 import type { DmConfig } from "./types.messages.js";
-import type { SecretRef } from "./types.secrets.js";
+import type { SecretInput, SecretRef } from "./types.secrets.js";
 
 export type GoogleChatDmConfig = {
   /** If false, ignore all incoming Google Chat DMs. Default: true. */
@@ -32,6 +32,27 @@ export type GoogleChatGroupConfig = {
 
 export type GoogleChatActionConfig = {
   reactions?: boolean;
+};
+
+export type GoogleChatUserAuthConfig = {
+  /** User OAuth access token used for user-auth-only Google Chat APIs. */
+  accessToken?: SecretInput;
+  /** Optional explicit secret reference for accessToken. */
+  accessTokenRef?: SecretRef;
+  /** Refresh token used to mint new access tokens. */
+  refreshToken?: SecretInput;
+  /** Optional explicit secret reference for refreshToken. */
+  refreshTokenRef?: SecretRef;
+  /** OAuth client ID for refresh flow. */
+  clientId?: SecretInput;
+  /** Optional explicit secret reference for clientId. */
+  clientIdRef?: SecretRef;
+  /** OAuth client secret for refresh flow. */
+  clientSecret?: SecretInput;
+  /** Optional explicit secret reference for clientSecret. */
+  clientSecretRef?: SecretRef;
+  /** Optional override for the OAuth token endpoint. */
+  tokenUrl?: string;
 };
 
 export type GoogleChatAccountConfig = {
@@ -83,6 +104,8 @@ export type GoogleChatAccountConfig = {
   webhookUrl?: string;
   /** Optional bot user resource name (users/...). */
   botUser?: string;
+  /** User OAuth credentials for Google Chat APIs that require acting as a user. */
+  userAuth?: GoogleChatUserAuthConfig;
   /** Max space messages to keep as history context (0 disables). */
   historyLimit?: number;
   /** Max DM turns to keep as history context. */

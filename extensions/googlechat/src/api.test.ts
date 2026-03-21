@@ -1,13 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedGoogleChatAccount } from "./accounts.js";
-import { downloadGoogleChatMedia, sendGoogleChatMessage } from "./api.js";
+import {
+  createGoogleChatReaction,
+  downloadGoogleChatMedia,
+  sendGoogleChatMessage,
+  uploadGoogleChatAttachment,
+} from "./api.js";
 
-const { fetchWithSsrFGuardMock } = vi.hoisted(() => ({
+const { fetchWithSsrFGuardMock, getGoogleChatAccessTokenMock } = vi.hoisted(() => ({
   fetchWithSsrFGuardMock: vi.fn(),
+  getGoogleChatAccessTokenMock: vi.fn().mockResolvedValue("token"),
 }));
 
 vi.mock("./auth.js", () => ({
-  getGoogleChatAccessToken: vi.fn().mockResolvedValue("token"),
+  getGoogleChatAccessToken: getGoogleChatAccessTokenMock,
 }));
 
 vi.mock("openclaw/plugin-sdk/googlechat", async (importOriginal) => ({
@@ -27,6 +33,12 @@ const account = {
   accountId: "default",
   enabled: true,
   credentialSource: "inline",
+  userAuth: {
+    refreshToken: "refresh-token",
+    clientId: "client-id",
+    clientSecret: "client-secret",
+    source: "config",
+  },
   config: {},
 } as ResolvedGoogleChatAccount;
 
@@ -51,6 +63,7 @@ async function expectDownloadToRejectForResponse(response: Response) {
 describe("downloadGoogleChatMedia", () => {
   afterEach(() => {
     fetchWithSsrFGuardMock.mockReset();
+    getGoogleChatAccessTokenMock.mockClear();
   });
 
   it("rejects when content-length exceeds max bytes", async () => {
@@ -90,6 +103,7 @@ describe("downloadGoogleChatMedia", () => {
 describe("sendGoogleChatMessage", () => {
   afterEach(() => {
     fetchWithSsrFGuardMock.mockReset();
+    getGoogleChatAccessTokenMock.mockClear();
   });
 
   it("adds messageReplyOption when sending to an existing thread", async () => {
@@ -160,5 +174,43 @@ describe("sendGoogleChatMessage", () => {
 
     const [request] = fetchMock.mock.calls[0] ?? [];
     expect(String(request?.url)).not.toContain("messageReplyOption=");
+  });
+
+  it("uses user auth for attachment uploads", async () => {
+    fetchWithSsrFGuardMock.mockResolvedValue({
+      response: new Response(
+        JSON.stringify({ attachmentDataRef: { attachmentUploadToken: "upload-token" } }),
+        { status: 200 },
+      ),
+      release: vi.fn(async () => undefined),
+    });
+
+    const result = await uploadGoogleChatAttachment({
+      account,
+      space: "spaces/AAA",
+      filename: "tiny.png",
+      buffer: Buffer.from("png-bytes"),
+      contentType: "image/png",
+    });
+
+    expect(getGoogleChatAccessTokenMock).toHaveBeenCalledWith(account, { authMode: "user" });
+    expect(result).toEqual({ attachmentUploadToken: "upload-token" });
+  });
+
+  it("uses user auth for reactions", async () => {
+    fetchWithSsrFGuardMock.mockResolvedValue({
+      response: new Response(JSON.stringify({ name: "spaces/AAA/messages/123/reactions/1" }), {
+        status: 200,
+      }),
+      release: vi.fn(async () => undefined),
+    });
+
+    await createGoogleChatReaction({
+      account,
+      messageName: "spaces/AAA/messages/123",
+      emoji: "👍",
+    });
+
+    expect(getGoogleChatAccessTokenMock).toHaveBeenCalledWith(account, { authMode: "user" });
   });
 });

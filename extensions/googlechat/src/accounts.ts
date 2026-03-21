@@ -1,9 +1,19 @@
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/account-id";
+import { normalizeResolvedSecretInputString } from "openclaw/plugin-sdk/config-runtime";
 import { isSecretRef } from "openclaw/plugin-sdk/googlechat";
 import { createAccountListHelpers, type OpenClawConfig } from "openclaw/plugin-sdk/googlechat";
 import type { GoogleChatAccountConfig } from "./types.config.js";
 
 export type GoogleChatCredentialSource = "file" | "inline" | "env" | "none";
+
+export type ResolvedGoogleChatUserAuth = {
+  accessToken?: string;
+  refreshToken?: string;
+  clientId?: string;
+  clientSecret?: string;
+  tokenUrl?: string;
+  source: "config" | "none";
+};
 
 export type ResolvedGoogleChatAccount = {
   accountId: string;
@@ -13,6 +23,7 @@ export type ResolvedGoogleChatAccount = {
   credentialSource: GoogleChatCredentialSource;
   credentials?: Record<string, unknown>;
   credentialsFile?: string;
+  userAuth: ResolvedGoogleChatUserAuth;
 };
 
 const ENV_SERVICE_ACCOUNT = "GOOGLE_CHAT_SERVICE_ACCOUNT";
@@ -52,6 +63,7 @@ function mergeGoogleChatAccountConfig(
     serviceAccount: _ignoredServiceAccount,
     serviceAccountRef: _ignoredServiceAccountRef,
     serviceAccountFile: _ignoredServiceAccountFile,
+    userAuth: _ignoredUserAuth,
     ...defaultAccountShared
   } = defaultAccountConfig;
   // In multi-account setups, allow accounts.default to provide shared defaults
@@ -126,6 +138,38 @@ function resolveCredentialsFromConfig(params: {
   return { source: "none" };
 }
 
+function resolveGoogleChatUserAuth(params: {
+  accountId: string;
+  account: GoogleChatAccountConfig;
+}): ResolvedGoogleChatUserAuth {
+  const { account, accountId } = params;
+  const pathBase = `channels.googlechat.accounts.${accountId}.userAuth`;
+  return {
+    accessToken: normalizeResolvedSecretInputString({
+      value: account.userAuth?.accessToken,
+      refValue: account.userAuth?.accessTokenRef,
+      path: `${pathBase}.accessToken`,
+    }),
+    refreshToken: normalizeResolvedSecretInputString({
+      value: account.userAuth?.refreshToken,
+      refValue: account.userAuth?.refreshTokenRef,
+      path: `${pathBase}.refreshToken`,
+    }),
+    clientId: normalizeResolvedSecretInputString({
+      value: account.userAuth?.clientId,
+      refValue: account.userAuth?.clientIdRef,
+      path: `${pathBase}.clientId`,
+    }),
+    clientSecret: normalizeResolvedSecretInputString({
+      value: account.userAuth?.clientSecret,
+      refValue: account.userAuth?.clientSecretRef,
+      path: `${pathBase}.clientSecret`,
+    }),
+    tokenUrl: account.userAuth?.tokenUrl?.trim() || undefined,
+    source: account.userAuth ? "config" : "none",
+  };
+}
+
 export function resolveGoogleChatAccount(params: {
   cfg: OpenClawConfig;
   accountId?: string | null;
@@ -136,6 +180,7 @@ export function resolveGoogleChatAccount(params: {
   const accountEnabled = merged.enabled !== false;
   const enabled = baseEnabled && accountEnabled;
   const credentials = resolveCredentialsFromConfig({ accountId, account: merged });
+  const userAuth = resolveGoogleChatUserAuth({ accountId, account: merged });
 
   return {
     accountId,
@@ -145,6 +190,7 @@ export function resolveGoogleChatAccount(params: {
     credentialSource: credentials.source,
     credentials: credentials.credentials,
     credentialsFile: credentials.credentialsFile,
+    userAuth,
   };
 }
 

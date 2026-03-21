@@ -50,6 +50,15 @@ function resolveAppUserNames(account: { config: { botUser?: string | null } }) {
   return new Set(["users/app", account.config.botUser?.trim()].filter(Boolean) as string[]);
 }
 
+function ensureUserAuth(account: { userAuth?: { accessToken?: string; refreshToken?: string } }) {
+  if (account.userAuth?.accessToken?.trim() || account.userAuth?.refreshToken?.trim()) {
+    return;
+  }
+  throw new Error(
+    "Google Chat user OAuth is required for attachments/reactions. Configure channels.googlechat.userAuth (or accounts.<id>.userAuth).",
+  );
+}
+
 export const googlechatMessageActions: ChannelMessageActionAdapter = {
   listActions: ({ cfg }) => {
     const accounts = listEnabledAccounts(cfg);
@@ -58,6 +67,7 @@ export const googlechatMessageActions: ChannelMessageActionAdapter = {
     }
     const actions = new Set<ChannelMessageActionName>([]);
     actions.add("send");
+    actions.add("sendAttachment");
     if (isReactionsEnabled(accounts, cfg)) {
       actions.add("react");
       actions.add("reactions");
@@ -76,20 +86,54 @@ export const googlechatMessageActions: ChannelMessageActionAdapter = {
       throw new Error("Google Chat credentials are missing.");
     }
 
-    if (action === "send") {
+    if (action === "send" || action === "sendAttachment") {
       const to = readStringParam(params, "to", { required: true });
-      const content = readStringParam(params, "message", {
-        required: true,
-        allowEmpty: true,
-      });
+      const content =
+        readStringParam(params, "message", {
+          required: action === "send",
+          allowEmpty: true,
+        }) ??
+        readStringParam(params, "caption", { allowEmpty: true }) ??
+        "";
       const mediaUrl = readStringParam(params, "media", { trim: false });
       const threadId = readStringParam(params, "threadId") ?? readStringParam(params, "replyTo");
       const space = await resolveGoogleChatOutboundSpace({ account, target: to });
 
+      if (action === "sendAttachment") {
+        ensureUserAuth(account);
+        const base64Buffer = readStringParam(params, "buffer", { trim: false });
+        const filename = readStringParam(params, "filename") ?? "attachment";
+        const contentType =
+          readStringParam(params, "contentType") ?? readStringParam(params, "mimeType");
+        if (!base64Buffer) {
+          throw new Error("Google Chat sendAttachment requires buffer (base64).");
+        }
+        const upload = await uploadGoogleChatAttachment({
+          account,
+          space,
+          filename,
+          buffer: Buffer.from(base64Buffer, "base64"),
+          contentType: contentType ?? undefined,
+        });
+        await sendGoogleChatMessage({
+          account,
+          space,
+          text: content,
+          thread: threadId ?? undefined,
+          attachments: upload.attachmentUploadToken
+            ? [{ attachmentUploadToken: upload.attachmentUploadToken, contentName: filename }]
+            : undefined,
+        });
+        return jsonResult({ ok: true, to: space });
+      }
+
       if (mediaUrl) {
+        ensureUserAuth(account);
         const core = getGoogleChatRuntime();
         const maxBytes = (account.config.mediaMaxMb ?? 20) * 1024 * 1024;
-        const loaded = await core.channel.media.fetchRemoteMedia({ url: mediaUrl, maxBytes });
+        const loaded = /^https?:\/\//i.test(mediaUrl)
+          ? await core.channel.media.fetchRemoteMedia({ url: mediaUrl, maxBytes })
+          : await core.media.loadWebMedia(mediaUrl, { maxBytes });
         const upload = await uploadGoogleChatAttachment({
           account,
           space,
@@ -124,6 +168,7 @@ export const googlechatMessageActions: ChannelMessageActionAdapter = {
     }
 
     if (action === "react") {
+      ensureUserAuth(account);
       const messageName = readStringParam(params, "messageId", { required: true });
       const { emoji, remove, isEmpty } = readReactionParams(params, {
         removeErrorMessage: "Emoji is required to remove a Google Chat reaction.",
@@ -158,6 +203,7 @@ export const googlechatMessageActions: ChannelMessageActionAdapter = {
     }
 
     if (action === "reactions") {
+      ensureUserAuth(account);
       const messageName = readStringParam(params, "messageId", { required: true });
       const limit = readNumberParam(params, "limit", { integer: true });
       const reactions = await listGoogleChatReactions({
