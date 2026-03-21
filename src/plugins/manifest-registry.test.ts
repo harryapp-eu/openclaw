@@ -238,6 +238,7 @@ describe("loadPluginManifestRegistry", () => {
     const dir = makeTempDir();
     writeManifest(dir, {
       id: "openai",
+      enabledByDefault: true,
       providers: ["openai", "openai-codex"],
       providerAuthEnvVars: {
         openai: ["OPENAI_API_KEY"],
@@ -262,6 +263,7 @@ describe("loadPluginManifestRegistry", () => {
     expect(registry.plugins[0]?.providerAuthEnvVars).toEqual({
       openai: ["OPENAI_API_KEY"],
     });
+    expect(registry.plugins[0]?.enabledByDefault).toBe(true);
     expect(registry.plugins[0]?.providerAuthChoices).toEqual([
       {
         provider: "openai",

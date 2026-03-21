@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { resolveMemorySearchConfig } from "../agents/memory-search.js";
 import { hasPotentialConfiguredChannels } from "../channels/config-presence.js";
 import { resolveCommandSecretRefsViaGateway } from "../cli/command-secret-gateway.js";
@@ -5,15 +6,19 @@ import { getStatusCommandSecretTargetIds } from "../cli/command-secret-targets.j
 import { withProgress } from "../cli/progress.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { readBestEffortConfig } from "../config/config.js";
+import { resolveConfigPath } from "../config/paths.js";
 import { callGateway } from "../gateway/call.js";
+import type { collectChannelStatusIssues as collectChannelStatusIssuesFn } from "../infra/channels-status-issues.js";
 import { resolveOsSummary } from "../infra/os-summary.js";
+import {
+  buildPluginCompatibilityNotices,
+  type PluginCompatibilityNotice,
+} from "../plugins/status.js";
 import { runExec } from "../process/exec.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { createLazyRuntimeSurface } from "../shared/lazy-runtime.js";
+import type { buildChannelsTable as buildChannelsTableFn } from "./status-all/channels.js";
 import { getAgentLocalStatuses } from "./status.agent-local.js";
-import type {
-  buildChannelsTable as buildChannelsTableFn,
-  collectChannelStatusIssues as collectChannelStatusIssuesFn,
-} from "./status.scan.runtime.js";
 import {
   buildTailscaleHttpsUrl,
   pickGatewaySelfPresence,
@@ -30,7 +35,6 @@ import { getUpdateCheckResult } from "./status.update.js";
 type DeferredResult<T> = { ok: true; value: T } | { ok: false; error: unknown };
 
 let pluginRegistryModulePromise: Promise<typeof import("../cli/plugin-registry.js")> | undefined;
-let statusScanRuntimeModulePromise: Promise<typeof import("./status.scan.runtime.js")> | undefined;
 let statusScanDepsRuntimeModulePromise:
   | Promise<typeof import("./status.scan.deps.runtime.js")>
   | undefined;
@@ -40,10 +44,10 @@ function loadPluginRegistryModule() {
   return pluginRegistryModulePromise;
 }
 
-function loadStatusScanRuntimeModule() {
-  statusScanRuntimeModulePromise ??= import("./status.scan.runtime.js");
-  return statusScanRuntimeModulePromise;
-}
+const loadStatusScanRuntimeModule = createLazyRuntimeSurface(
+  () => import("./status.scan.runtime.js"),
+  ({ statusScanRuntime }) => statusScanRuntime,
+);
 
 function loadStatusScanDepsRuntimeModule() {
   statusScanDepsRuntimeModulePromise ??= import("./status.scan.deps.runtime.js");
@@ -62,6 +66,25 @@ function unwrapDeferredResult<T>(result: DeferredResult<T>): T {
     throw result.error;
   }
   return result.value;
+}
+
+function shouldCollectPluginCompatibility(cfg: OpenClawConfig): boolean {
+  if (hasPotentialConfiguredChannels(cfg)) {
+    return true;
+  }
+  return existsSync(resolveConfigPath(process.env));
+}
+
+function isMissingConfigColdStart(): boolean {
+  return !existsSync(resolveConfigPath(process.env));
+}
+
+function buildColdStartUpdateResult(): Awaited<ReturnType<typeof getUpdateCheckResult>> {
+  return {
+    root: null,
+    installKind: "unknown",
+    packageManager: "unknown",
+  };
 }
 
 async function resolveChannelsStatus(params: {
@@ -109,6 +132,7 @@ export type StatusScanResult = {
   summary: Awaited<ReturnType<typeof getStatusSummary>>;
   memory: MemoryStatusSnapshot | null;
   memoryPlugin: MemoryPluginStatus;
+  pluginCompatibility: PluginCompatibilityNotice[];
 };
 
 async function resolveMemoryStatusSnapshot(params: {
@@ -130,6 +154,7 @@ async function scanStatusJsonFast(opts: {
   timeoutMs?: number;
   all?: boolean;
 }): Promise<StatusScanResult> {
+  const coldStart = isMissingConfigColdStart();
   const loadedRaw = await readBestEffortConfig();
   const { resolvedConfig: cfg, diagnostics: secretDiagnostics } =
     await resolveCommandSecretRefsViaGateway({
@@ -138,18 +163,22 @@ async function scanStatusJsonFast(opts: {
       targetIds: getStatusCommandSecretTargetIds(),
       mode: "read_only_status",
     });
-  if (hasPotentialConfiguredChannels(cfg)) {
+  const hasConfiguredChannels = hasPotentialConfiguredChannels(cfg);
+  if (hasConfiguredChannels) {
     const { ensurePluginRegistryLoaded } = await loadPluginRegistryModule();
     ensurePluginRegistryLoaded({ scope: "configured-channels" });
   }
   const osSummary = resolveOsSummary();
   const tailscaleMode = cfg.gateway?.tailscale?.mode ?? "off";
   const updateTimeoutMs = opts.all ? 6500 : 2500;
-  const updatePromise = getUpdateCheckResult({
-    timeoutMs: updateTimeoutMs,
-    fetchGit: true,
-    includeRegistry: true,
-  });
+  const skipColdStartNetworkChecks = coldStart && !hasConfiguredChannels && opts.all !== true;
+  const updatePromise = skipColdStartNetworkChecks
+    ? Promise.resolve(buildColdStartUpdateResult())
+    : getUpdateCheckResult({
+        timeoutMs: updateTimeoutMs,
+        fetchGit: true,
+        includeRegistry: true,
+      });
   const agentStatusPromise = getAgentLocalStatuses(cfg);
   const summaryPromise = getStatusSummary({ config: cfg, sourceConfig: loadedRaw });
 
@@ -164,7 +193,13 @@ async function scanStatusJsonFast(opts: {
           )
           .catch(() => null);
 
-  const gatewayProbePromise = resolveGatewayProbeSnapshot({ cfg, opts });
+  const gatewayProbePromise = resolveGatewayProbeSnapshot({
+    cfg,
+    opts: {
+      ...opts,
+      ...(skipColdStartNetworkChecks ? { skipProbe: true } : {}),
+    },
+  });
 
   const [tailscaleDns, update, agentStatus, gatewaySnapshot, summary] = await Promise.all([
     tailscaleDnsPromise,
@@ -194,6 +229,9 @@ async function scanStatusJsonFast(opts: {
   const memoryPlugin = resolveMemoryPluginStatus(cfg);
   const memoryPromise = resolveMemoryStatusSnapshot({ cfg, agentStatus, memoryPlugin });
   const memory = await memoryPromise;
+  const pluginCompatibility = shouldCollectPluginCompatibility(cfg)
+    ? buildPluginCompatibilityNotices({ config: cfg })
+    : [];
 
   return {
     cfg,
@@ -218,6 +256,7 @@ async function scanStatusJsonFast(opts: {
     summary,
     memory,
     memoryPlugin,
+    pluginCompatibility,
   };
 }
 
@@ -235,10 +274,11 @@ export async function scanStatus(
   return await withProgress(
     {
       label: "Scanning status…",
-      total: 10,
+      total: 11,
       enabled: true,
     },
     async (progress) => {
+      const coldStart = isMissingConfigColdStart();
       progress.setLabel("Loading config…");
       const loadedRaw = await readBestEffortConfig();
       const { resolvedConfig: cfg, diagnostics: secretDiagnostics } =
@@ -248,6 +288,8 @@ export async function scanStatus(
           targetIds: getStatusCommandSecretTargetIds(),
           mode: "read_only_status",
         });
+      const hasConfiguredChannels = hasPotentialConfiguredChannels(cfg);
+      const skipColdStartNetworkChecks = coldStart && !hasConfiguredChannels && opts.all !== true;
       const osSummary = resolveOsSummary();
       const tailscaleMode = cfg.gateway?.tailscale?.mode ?? "off";
       const tailscaleDnsPromise =
@@ -262,11 +304,13 @@ export async function scanStatus(
               .catch(() => null);
       const updateTimeoutMs = opts.all ? 6500 : 2500;
       const updatePromise = deferResult(
-        getUpdateCheckResult({
-          timeoutMs: updateTimeoutMs,
-          fetchGit: true,
-          includeRegistry: true,
-        }),
+        skipColdStartNetworkChecks
+          ? Promise.resolve(buildColdStartUpdateResult())
+          : getUpdateCheckResult({
+              timeoutMs: updateTimeoutMs,
+              fetchGit: true,
+              includeRegistry: true,
+            }),
       );
       const agentStatusPromise = deferResult(getAgentLocalStatuses(cfg));
       const summaryPromise = deferResult(
@@ -299,7 +343,13 @@ export async function scanStatus(
         gatewayProbeAuth,
         gatewayProbeAuthWarning,
         gatewayProbe,
-      } = await resolveGatewayProbeSnapshot({ cfg, opts });
+      } = await resolveGatewayProbeSnapshot({
+        cfg,
+        opts: {
+          ...opts,
+          ...(skipColdStartNetworkChecks ? { skipProbe: true } : {}),
+        },
+      });
       const gatewayReachable = gatewayProbe?.ok === true;
       const gatewaySelf = gatewayProbe?.presence
         ? pickGatewaySelfPresence(gatewayProbe.presence)
@@ -325,6 +375,10 @@ export async function scanStatus(
       progress.setLabel("Checking memory…");
       const memoryPlugin = resolveMemoryPluginStatus(cfg);
       const memory = await resolveMemoryStatusSnapshot({ cfg, agentStatus, memoryPlugin });
+      progress.tick();
+
+      progress.setLabel("Checking plugins…");
+      const pluginCompatibility = buildPluginCompatibilityNotices({ config: cfg });
       progress.tick();
 
       progress.setLabel("Reading sessions…");
@@ -357,6 +411,7 @@ export async function scanStatus(
         summary,
         memory,
         memoryPlugin,
+        pluginCompatibility,
       };
     },
   );

@@ -1,13 +1,17 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/googlechat";
 import {
+  deliverTextOrMediaReply,
+  resolveSendableOutboundReplyParts,
+} from "openclaw/plugin-sdk/reply-payload";
+import type { OpenClawConfig } from "../runtime-api.js";
+import {
+  createChannelReplyPipeline,
   createWebhookInFlightLimiter,
-  createReplyPrefixOptions,
   registerWebhookTargetWithPluginRoute,
   resolveInboundRouteEnvelopeBuilderWithRuntime,
   resolveThreadSessionKeys,
   resolveWebhookPath,
-} from "openclaw/plugin-sdk/googlechat";
+} from "../runtime-api.js";
 import { type ResolvedGoogleChatAccount } from "./accounts.js";
 import {
   downloadGoogleChatMedia,
@@ -271,7 +275,6 @@ async function processMessageWithPipeline(params: {
     from: fromLabel,
     timestamp: event.eventTime ? Date.parse(event.eventTime) : undefined,
     body: rawBody,
-    sessionKey,
   });
 
   const ctxPayload = core.channel.reply.finalizeInboundContext({
@@ -350,7 +353,7 @@ async function processMessageWithPipeline(params: {
     }
   }
 
-  const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
+  const { onModelSelected, ...replyPipeline } = createChannelReplyPipeline({
     cfg: config,
     agentId: route.agentId,
     channel: "googlechat",
@@ -361,7 +364,7 @@ async function processMessageWithPipeline(params: {
     ctx: ctxPayload,
     cfg: config,
     dispatcherOptions: {
-      ...prefixOptions,
+      ...replyPipeline,
       deliver: async (payload) => {
         await deliverGoogleChatReply({
           payload,
@@ -434,14 +437,14 @@ async function deliverGoogleChatReply(params: {
     : undefined;
   const thread = replyThread ?? params.defaultThread;
   const threadKey = replyThreadKey ?? params.defaultThreadKey;
-  const mediaList = payload.mediaUrls?.length
-    ? payload.mediaUrls
-    : payload.mediaUrl
-      ? [payload.mediaUrl]
-      : [];
+  const reply = resolveSendableOutboundReplyParts(payload);
+  const mediaCount = reply.mediaCount;
+  const hasMedia = reply.hasMedia;
+  const text = reply.text;
+  let firstTextChunk = true;
+  let suppressCaption = false;
 
-  if (mediaList.length > 0) {
-    let suppressCaption = false;
+  if (hasMedia) {
     if (typingMessageName) {
       try {
         await deleteGoogleChatMessage({
@@ -450,9 +453,9 @@ async function deliverGoogleChatReply(params: {
         });
       } catch (err) {
         runtime.error?.(`Google Chat typing cleanup failed: ${String(err)}`);
-        const fallbackText = payload.text?.trim()
-          ? payload.text
-          : mediaList.length > 1
+        const fallbackText = reply.hasText
+          ? text
+          : mediaCount > 1
             ? "Sent attachments."
             : "Sent attachment.";
         try {
@@ -461,16 +464,44 @@ async function deliverGoogleChatReply(params: {
             messageName: typingMessageName,
             text: fallbackText,
           });
-          suppressCaption = Boolean(payload.text?.trim());
+          suppressCaption = Boolean(text.trim());
         } catch (updateErr) {
           runtime.error?.(`Google Chat typing update failed: ${String(updateErr)}`);
         }
       }
     }
-    let first = true;
-    for (const mediaUrl of mediaList) {
-      const caption = first && !suppressCaption ? payload.text : undefined;
-      first = false;
+  }
+
+  const chunkLimit = account.config.textChunkLimit ?? 4000;
+  const chunkMode = core.channel.text.resolveChunkMode(config, "googlechat", account.accountId);
+  await deliverTextOrMediaReply({
+    payload,
+    text: suppressCaption ? "" : reply.text,
+    chunkText: (value) => core.channel.text.chunkMarkdownTextWithMode(value, chunkLimit, chunkMode),
+    sendText: async (chunk) => {
+      try {
+        if (firstTextChunk && typingMessageName) {
+          await updateGoogleChatMessage({
+            account,
+            messageName: typingMessageName,
+            text: chunk,
+          });
+        } else {
+          await sendGoogleChatMessage({
+            account,
+            space: spaceId,
+            text: chunk,
+            thread,
+            threadKey,
+          });
+        }
+        firstTextChunk = false;
+        statusSink?.({ lastOutboundAt: Date.now() });
+      } catch (err) {
+        runtime.error?.(`Google Chat message send failed: ${String(err)}`);
+      }
+    },
+    sendMedia: async ({ mediaUrl, caption }) => {
       try {
         const loaded = await core.channel.media.fetchRemoteMedia({
           url: mediaUrl,
@@ -500,39 +531,8 @@ async function deliverGoogleChatReply(params: {
       } catch (err) {
         runtime.error?.(`Google Chat attachment send failed: ${String(err)}`);
       }
-    }
-    return;
-  }
-
-  if (payload.text) {
-    const chunkLimit = account.config.textChunkLimit ?? 4000;
-    const chunkMode = core.channel.text.resolveChunkMode(config, "googlechat", account.accountId);
-    const chunks = core.channel.text.chunkMarkdownTextWithMode(payload.text, chunkLimit, chunkMode);
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      try {
-        // Edit typing message with first chunk if available
-        if (i === 0 && typingMessageName) {
-          await updateGoogleChatMessage({
-            account,
-            messageName: typingMessageName,
-            text: chunk,
-          });
-        } else {
-          await sendGoogleChatMessage({
-            account,
-            space: spaceId,
-            text: chunk,
-            thread,
-            threadKey,
-          });
-        }
-        statusSink?.({ lastOutboundAt: Date.now() });
-      } catch (err) {
-        runtime.error?.(`Google Chat message send failed: ${String(err)}`);
-      }
-    }
-  }
+    },
+  });
 }
 
 async function uploadAttachmentForReply(params: {
