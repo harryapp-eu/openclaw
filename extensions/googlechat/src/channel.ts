@@ -59,6 +59,10 @@ const formatAllowFromEntry = (entry: string) =>
     .replace(/^users\//i, "")
     .toLowerCase();
 
+function hasGoogleChatUserAuth(account: ResolvedGoogleChatAccount): boolean {
+  return Boolean(account.userAuth.accessToken?.trim() || account.userAuth.refreshToken?.trim());
+}
+
 const googleChatConfigAccessors = createScopedAccountConfigAccessors({
   resolveAccount: ({ cfg, accountId }) => resolveGoogleChatAccount({ cfg, accountId }),
   resolveAllowFrom: (account: ResolvedGoogleChatAccount) => account.config.dm?.allowFrom,
@@ -308,6 +312,11 @@ export const googlechatPlugin: ChannelPlugin<ResolvedGoogleChatAccount> = {
         cfg: cfg,
         accountId,
       });
+      if (!hasGoogleChatUserAuth(account)) {
+        throw new Error(
+          "Google Chat media send requires user OAuth. Configure channels.googlechat.userAuth (or accounts.<id>.userAuth).",
+        );
+      }
       const space = await resolveGoogleChatOutboundSpace({ account, target: to });
       const thread = (threadId ?? replyToId ?? undefined) as string | undefined;
       const runtime = getGoogleChatRuntime();

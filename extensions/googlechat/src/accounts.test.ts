@@ -128,4 +128,46 @@ describe("resolveGoogleChatAccount", () => {
     expect(resolved.config.dangerouslyAllowNameMatching).toBeUndefined();
     expect(resolved.config.audienceType).toBe("app-url");
   });
+
+  it("resolves user OAuth secrets on the selected account without inheriting them", () => {
+    const cfg: OpenClawConfig = {
+      channels: {
+        googlechat: {
+          accounts: {
+            default: {
+              userAuth: {
+                refreshToken: "default-refresh",
+              },
+            },
+            andy: {
+              serviceAccountFile: "/tmp/andy-sa.json",
+              userAuth: {
+                accessToken: "andy-access",
+                refreshToken: "andy-refresh",
+                clientId: "andy-client",
+                clientSecret: "andy-secret",
+                tokenUrl: "https://oauth.example.com/token",
+              },
+            },
+            april: {
+              serviceAccountFile: "/tmp/april-sa.json",
+            },
+          },
+        },
+      },
+    };
+
+    const andy = resolveGoogleChatAccount({ cfg, accountId: "andy" });
+    expect(andy.userAuth).toMatchObject({
+      accessToken: "andy-access",
+      refreshToken: "andy-refresh",
+      clientId: "andy-client",
+      clientSecret: "andy-secret",
+      tokenUrl: "https://oauth.example.com/token",
+      source: "config",
+    });
+
+    const april = resolveGoogleChatAccount({ cfg, accountId: "april" });
+    expect(april.userAuth).toEqual({ source: "none" });
+  });
 });

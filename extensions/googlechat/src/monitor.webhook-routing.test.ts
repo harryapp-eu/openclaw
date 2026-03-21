@@ -5,12 +5,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEmptyPluginRegistry } from "../../../src/plugins/registry.js";
 import { setActivePluginRegistry } from "../../../src/plugins/runtime.js";
 import { createMockServerResponse } from "../../test-utils/mock-http-response.js";
+import { createPluginRuntimeMock } from "../../test-utils/plugin-runtime-mock.js";
 import type { ResolvedGoogleChatAccount } from "./accounts.js";
 import { verifyGoogleChatRequest } from "./auth.js";
 import { handleGoogleChatWebhookRequest, registerGoogleChatWebhookTarget } from "./monitor.js";
 
 vi.mock("./auth.js", () => ({
   verifyGoogleChatRequest: vi.fn(),
+}));
+
+vi.mock("./api.js", () => ({
+  downloadGoogleChatMedia: vi.fn(),
+  deleteGoogleChatMessage: vi.fn(),
+  sendGoogleChatMessage: vi.fn(),
+  updateGoogleChatMessage: vi.fn(),
 }));
 
 function createWebhookRequest(params: {
@@ -124,6 +132,12 @@ async function dispatchWebhookRequest(req: IncomingMessage) {
   return res;
 }
 
+async function flushAsync() {
+  for (let i = 0; i < 3; i += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
 async function expectVerifiedRoute(params: {
   request: IncomingMessage;
   expectedStatus: number;
@@ -143,6 +157,81 @@ function mockSecondVerifierSuccess() {
   vi.mocked(verifyGoogleChatRequest)
     .mockResolvedValueOnce({ ok: false, reason: "invalid" })
     .mockResolvedValueOnce({ ok: true });
+}
+
+function createRoutingHarness() {
+  const dispatchReplyWithBufferedBlockDispatcher = vi.fn(async () => ({
+    queuedFinal: false,
+    counts: { tool: 0, block: 0, final: 0 },
+  }));
+  const recordSessionMetaFromInbound = vi.fn().mockResolvedValue(undefined);
+  const runtimeLog = vi.fn();
+  const runtimeError = vi.fn();
+  const core = createPluginRuntimeMock({
+    channel: {
+      routing: {
+        resolveAgentRoute: vi.fn(() => ({
+          agentId: "main",
+          accountId: "default",
+          sessionKey: "agent:main:googlechat:group:spaces/AAA",
+          mainSessionKey: "agent:main:main",
+          matchedBy: "default",
+        })),
+      },
+      reply: {
+        dispatchReplyWithBufferedBlockDispatcher:
+          dispatchReplyWithBufferedBlockDispatcher as unknown as PluginRuntime["channel"]["reply"]["dispatchReplyWithBufferedBlockDispatcher"],
+      },
+      session: {
+        recordSessionMetaFromInbound:
+          recordSessionMetaFromInbound as unknown as PluginRuntime["channel"]["session"]["recordSessionMetaFromInbound"],
+      },
+      commands: {
+        shouldComputeCommandAuthorized: vi.fn(() => false),
+        shouldHandleTextCommands: vi.fn(() => true),
+        isControlCommandMessage: vi.fn(() => false),
+      },
+    },
+    logging: {
+      shouldLogVerbose: vi.fn(() => true),
+    },
+  });
+
+  return {
+    core,
+    runtime: {
+      log: runtimeLog,
+      error: runtimeError,
+    },
+    dispatchReplyWithBufferedBlockDispatcher,
+    recordSessionMetaFromInbound,
+    runtimeLog,
+  };
+}
+
+function createMessageEvent(params: { threadKey: string; messageName?: string }) {
+  return {
+    type: "MESSAGE",
+    eventTime: "2026-03-18T00:00:00.000Z",
+    space: {
+      name: "spaces/AAA",
+      type: "SPACE",
+      displayName: "Alpha Room",
+    },
+    message: {
+      name: params.messageName ?? `spaces/AAA/messages/${params.threadKey}`,
+      text: `hello from ${params.threadKey}`,
+      thread: {
+        threadKey: params.threadKey,
+      },
+      sender: {
+        name: "users/12345",
+        displayName: "Test User",
+        email: "test@example.com",
+        type: "HUMAN",
+      },
+    },
+  };
 }
 
 describe("Google Chat webhook routing", () => {
@@ -271,6 +360,144 @@ describe("Google Chat webhook routing", () => {
         sinkB,
         expectedSink: "B",
       });
+    } finally {
+      unregister();
+    }
+  });
+
+  it("reuses the same session key for repeated events in the same thread key", async () => {
+    vi.mocked(verifyGoogleChatRequest).mockResolvedValue({ ok: true });
+    const harness = createRoutingHarness();
+    const unregister = registerGoogleChatWebhookTarget({
+      account: {
+        ...baseAccount("default"),
+        config: {
+          dm: { enabled: true, policy: "open" },
+          groupPolicy: "open",
+          requireMention: false,
+          typingIndicator: "none",
+        },
+      },
+      config: {} as OpenClawConfig,
+      runtime: harness.runtime,
+      core: harness.core,
+      path: "/googlechat",
+      statusSink: vi.fn(),
+      mediaMaxMb: 5,
+    });
+
+    try {
+      const first = await dispatchWebhookRequest(
+        createWebhookRequest({
+          authorization: "Bearer test-token",
+          payload: createMessageEvent({
+            threadKey: "thread-alpha",
+            messageName: "spaces/AAA/messages/1",
+          }),
+        }),
+      );
+      const second = await dispatchWebhookRequest(
+        createWebhookRequest({
+          authorization: "Bearer test-token",
+          payload: createMessageEvent({
+            threadKey: "thread-alpha",
+            messageName: "spaces/AAA/messages/2",
+          }),
+        }),
+      );
+      expect(first.statusCode).toBe(200);
+      expect(second.statusCode).toBe(200);
+
+      await flushAsync();
+
+      expect(harness.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(2);
+      const firstCtx = harness.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.ctx as {
+        SessionKey?: string;
+        ParentSessionKey?: string;
+      };
+      const secondCtx = harness.dispatchReplyWithBufferedBlockDispatcher.mock.calls[1]?.[0]
+        ?.ctx as {
+        SessionKey?: string;
+        ParentSessionKey?: string;
+      };
+
+      expect(firstCtx.SessionKey).toBe(
+        "agent:main:googlechat:group:spaces/AAA:thread:googlechat-thread-key:thread-alpha",
+      );
+      expect(secondCtx.SessionKey).toBe(firstCtx.SessionKey);
+      expect(firstCtx.ParentSessionKey).toBe("agent:main:googlechat:group:spaces/AAA");
+      expect(secondCtx.ParentSessionKey).toBe(firstCtx.ParentSessionKey);
+      expect(harness.runtimeLog).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "thread routing source=thread-key identity=thread-alpha baseSessionKey=agent:main:googlechat:group:spaces/AAA sessionKey=agent:main:googlechat:group:spaces/AAA:thread:googlechat-thread-key:thread-alpha",
+        ),
+      );
+    } finally {
+      unregister();
+    }
+  });
+
+  it("uses different session keys for different thread keys", async () => {
+    vi.mocked(verifyGoogleChatRequest).mockResolvedValue({ ok: true });
+    const harness = createRoutingHarness();
+    const unregister = registerGoogleChatWebhookTarget({
+      account: {
+        ...baseAccount("default"),
+        config: {
+          dm: { enabled: true, policy: "open" },
+          groupPolicy: "open",
+          requireMention: false,
+          typingIndicator: "none",
+        },
+      },
+      config: {} as OpenClawConfig,
+      runtime: harness.runtime,
+      core: harness.core,
+      path: "/googlechat",
+      statusSink: vi.fn(),
+      mediaMaxMb: 5,
+    });
+
+    try {
+      const first = await dispatchWebhookRequest(
+        createWebhookRequest({
+          authorization: "Bearer test-token",
+          payload: createMessageEvent({
+            threadKey: "thread-alpha",
+            messageName: "spaces/AAA/messages/1",
+          }),
+        }),
+      );
+      const second = await dispatchWebhookRequest(
+        createWebhookRequest({
+          authorization: "Bearer test-token",
+          payload: createMessageEvent({
+            threadKey: "thread-beta",
+            messageName: "spaces/AAA/messages/2",
+          }),
+        }),
+      );
+      expect(first.statusCode).toBe(200);
+      expect(second.statusCode).toBe(200);
+
+      await flushAsync();
+
+      expect(harness.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(2);
+      const firstCtx = harness.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.ctx as {
+        SessionKey?: string;
+      };
+      const secondCtx = harness.dispatchReplyWithBufferedBlockDispatcher.mock.calls[1]?.[0]
+        ?.ctx as {
+        SessionKey?: string;
+      };
+
+      expect(firstCtx.SessionKey).toBe(
+        "agent:main:googlechat:group:spaces/AAA:thread:googlechat-thread-key:thread-alpha",
+      );
+      expect(secondCtx.SessionKey).toBe(
+        "agent:main:googlechat:group:spaces/AAA:thread:googlechat-thread-key:thread-beta",
+      );
+      expect(secondCtx.SessionKey).not.toBe(firstCtx.SessionKey);
     } finally {
       unregister();
     }
